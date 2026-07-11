@@ -42,6 +42,7 @@ html, body, #root {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
+  border-right: 1px solid var(--border);
 }
 
 .sidebar-header {
@@ -198,6 +199,15 @@ html, body, #root {
   flex-direction: column;
   background: var(--bg-primary);
   min-width: 0;
+  overflow: hidden;
+}
+
+.server-view .chat-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-primary);
 }
 
 .auth-page {
@@ -1168,6 +1178,7 @@ html, body, #root {
   display: flex;
   height: 100vh;
   width: 100vw;
+  overflow: hidden;
 }
 
 .app-body {
@@ -1180,6 +1191,7 @@ html, body, #root {
   display: flex;
   flex: 1;
   min-width: 0;
+  height: 100%;
 }
 
 .channel-sidebar {
@@ -1188,6 +1200,7 @@ html, body, #root {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
+  border-right: 1px solid var(--border);
 }
 
 .server-header {
@@ -1200,6 +1213,7 @@ html, body, #root {
   box-shadow: 0 1px 0 rgba(0,0,0,0.2);
   cursor: pointer;
 }
+
 
 .server-name {
   font-weight: 600;
@@ -1221,7 +1235,7 @@ html, body, #root {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 16px;
+  padding: 6px 16px;
   cursor: pointer;
   color: var(--text-muted);
   font-size: 11px;

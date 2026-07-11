@@ -1,5 +1,5 @@
 import { useParams, useNavigate } from 'react-router-dom';
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import { getServers, getKeys, storeServerMessage, getServerMessages, setLastRead } from '../db/indexeddb';
 import { decryptWithGroupKey, encryptWithGroupKey, b64, fromB64 } from '../crypto/groupKeys';
@@ -22,13 +22,13 @@ function stringToColor(str) {
 }
 
 const ChevronIcon = ({ collapsed }) => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }}>
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)', transition: 'transform 0.15s', flexShrink: 0 }}>
     <polyline points="6 9 12 15 18 9"></polyline>
   </svg>
 );
 
 const HashIcon = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <line x1="4" y1="9" x2="20" y2="9"></line>
     <line x1="4" y1="15" x2="20" y2="15"></line>
     <line x1="10" y1="3" x2="8" y2="21"></line>
@@ -37,9 +37,16 @@ const HashIcon = () => (
 );
 
 const LockIcon = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
     <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
     <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+  </svg>
+);
+
+const SpeakerIcon = () => (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+    <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
   </svg>
 );
 
@@ -52,7 +59,6 @@ export default function ServerView() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [members, setMembers] = useState([]);
   const [collapsedCategories, setCollapsedCategories] = useState({});
   const [myRole, setMyRole] = useState('member');
   const messagesEndRef = useRef(null);
@@ -80,7 +86,7 @@ export default function ServerView() {
     let s = servers.find(srv => srv.id === serverId);
 
     if (!s) {
-      // Fetch from server and decrypt
+      // Fetch from server
       const res = await fetch(`${API}/servers/${serverId}/keys`, {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
@@ -89,13 +95,7 @@ export default function ServerView() {
         return;
       }
       const data = await res.json();
-      const keys = await getKeys();
-      const keyPair = await importKeyPair(keys.publicKey, keys.privateKey);
-
-      // Decrypt server name
-      const serverNameEnc = fromB64(data.encryptedServerKey); // Actually server key is encrypted for us, need to decrypt it first
-      // ... decrypt serverKey using identity key
-      // For now, use placeholder
+      // For now, use placeholder - in production decrypt names
       s = {
         id: serverId,
         name: 'Server',
@@ -106,7 +106,8 @@ export default function ServerView() {
           name: 'channel',
           channelKey: c.encryptedChannelKey,
           isPrivate: c.isPrivate,
-          roleRequired: c.roleRequired
+          roleRequired: c.roleRequired,
+          type: 'text'
         }))
       };
     }
@@ -114,19 +115,21 @@ export default function ServerView() {
     setServer(s);
     setMyRole(s.role || 'member');
 
-    // Organize channels into categories
-    const cats = s.categories || {
-      'TEXT CHANNELS': s.channels.filter(c => !c.isPrivate),
-      'PRIVATE': s.channels.filter(c => c.isPrivate && myRole !== 'member')
+    // Build categories
+    const defaultCategories = {
+      'TEXT CHANNELS': s.channels.filter(c => c.type !== 'voice' && !c.isPrivate),
+      'VOICE CHANNELS': s.channels.filter(c => c.type === 'voice'),
     };
-    if (!s.categories && s.channels.length > 0) {
-      cats['TEXT CHANNELS'] = s.channels;
+    if (s.channels.some(c => c.isPrivate)) {
+      defaultCategories['PRIVATE'] = s.channels.filter(c => c.isPrivate);
     }
-    setCategories(cats);
+    setCategories(defaultCategories);
+    setChannels(s.channels);
 
     // Auto-select first channel
     if (!selectedChannel && s.channels.length > 0) {
-      setSelectedChannel(s.channels[0].id);
+      const first = s.channels.find(c => !c.isPrivate) || s.channels[0];
+      setSelectedChannel(first.id);
     }
   }
 
@@ -135,7 +138,6 @@ export default function ServerView() {
     const local = await getServerMessages(selectedChannel);
     setMessages(local.sort((a, b) => a.sequenceNumber - b.sequenceNumber));
 
-    // Fetch new from server
     const lastSeq = local.length > 0 ? local[local.length - 1].sequenceNumber : 0;
     const res = await fetch(`${API}/channels/${selectedChannel}/messages?after=${lastSeq}`, {
       headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
@@ -143,7 +145,6 @@ export default function ServerView() {
     if (!res.ok) return;
     const inbox = await res.json();
 
-    const keys = await getKeys();
     const serverData = await getServers().then(s => s.find(sv => sv.id === serverId));
     const channel = serverData?.channels.find(c => c.id === selectedChannel);
     if (!channel) return;
@@ -261,7 +262,7 @@ export default function ServerView() {
 
   return (
     <div className="server-view">
-      {/* Channel Sidebar */}
+      {/* Channel Sidebar - LEFT side, replaces DM sidebar */}
       <div className="channel-sidebar">
         <div className="server-header">
           <span className="server-name">{server.name}</span>
@@ -270,26 +271,28 @@ export default function ServerView() {
 
         <div className="channel-list">
           {Object.entries(categories).map(([catName, catChannels]) => (
-            <div key={catName} className="channel-category">
-              <div className="category-header" onClick={() => toggleCategory(catName)}>
-                <ChevronIcon collapsed={!!collapsedCategories[catName]} />
-                <span>{catName}</span>
-              </div>
-              {!collapsedCategories[catName] && (
-                <div className="category-channels">
-                  {catChannels.map(ch => (
-                    <div
-                      key={ch.id}
-                      className={`channel-item ${selectedChannel === ch.id ? 'active' : ''}`}
-                      onClick={() => setSelectedChannel(ch.id)}
-                    >
-                      {ch.isPrivate ? <LockIcon /> : <HashIcon />}
-                      <span className="channel-name">{ch.name || 'channel'}</span>
-                    </div>
-                  ))}
+            catChannels.length > 0 && (
+              <div key={catName} className="channel-category">
+                <div className="category-header" onClick={() => toggleCategory(catName)}>
+                  <ChevronIcon collapsed={!!collapsedCategories[catName]} />
+                  <span>{catName}</span>
                 </div>
-              )}
-            </div>
+                {!collapsedCategories[catName] && (
+                  <div className="category-channels">
+                    {catChannels.map(ch => (
+                      <div
+                        key={ch.id}
+                        className={`channel-item ${selectedChannel === ch.id ? 'active' : ''}`}
+                        onClick={() => setSelectedChannel(ch.id)}
+                      >
+                        {ch.type === 'voice' ? <SpeakerIcon /> : (ch.isPrivate ? <LockIcon /> : <HashIcon />)}
+                        <span className="channel-name">{ch.name || 'channel'}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
           ))}
         </div>
       </div>
@@ -301,7 +304,7 @@ export default function ServerView() {
             <>
               <HashIcon />
               <div className="chat-header-name">
-                {server.channels?.find(c => c.id === selectedChannel)?.name || 'general'}
+                {channels.find(c => c.id === selectedChannel)?.name || 'general'}
               </div>
             </>
           )}
@@ -342,7 +345,7 @@ export default function ServerView() {
             <textarea
               value={input}
               onChange={e => setInput(e.target.value)}
-              placeholder={`Message #${server.channels?.find(c => c.id === selectedChannel)?.name || 'general'}`}
+              placeholder={`Message #${channels.find(c => c.id === selectedChannel)?.name || 'general'}`}
               onKeyDown={e => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();

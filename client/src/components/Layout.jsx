@@ -1,5 +1,5 @@
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { getContacts, getKeys, getServers, getMessages, updateContact, deleteContact } from '../db/indexeddb';
 import { useApp } from '../context/AppContext';
 import ServerSidebar from './ServerSidebar';
@@ -61,6 +61,10 @@ export default function Layout() {
   const [friendModalContact, setFriendModalContact] = useState(null);
   const navigate = useNavigate();
   const location = useLocation();
+  
+  // NUCLEAR FIX: Check actual browser URL, not React Router's nested location
+  const isServerView = typeof window !== 'undefined' && window.location.pathname.startsWith('/server/');
+  
   const { selectedContact, setSelectedContact, selectedServer, setSelectedServer, selectedChannel, setSelectedChannel, contextMenu, setContextMenu } = useApp();
 
   const loadContacts = useCallback(async () => {
@@ -129,7 +133,6 @@ export default function Layout() {
 
   const handleInviteToServer = async (contact, serverId) => {
     try {
-      // 1. Create invite on server
       const res = await fetch(`/api/invites`, {
         method: 'POST',
         headers: {
@@ -148,11 +151,8 @@ export default function Layout() {
         throw new Error(err.error || 'Failed to create invite');
       }
       const { code } = await res.json();
-
-      // 2. Copy invite link to clipboard
       const inviteLink = `${window.location.origin}/invite/${code}`;
       await navigator.clipboard.writeText(inviteLink);
-
       alert(`Invite link copied to clipboard!\nShare it with ${contact.username}`);
     } catch (err) {
       alert('Failed to create invite: ' + err.message);
@@ -179,89 +179,93 @@ export default function Layout() {
     loadContacts();
   };
 
-  const activeContact = contacts.find(c => c.usernameHash === selectedContact);
-
   return (
     <div className="discord-app" onClick={() => setContextMenu(null)}>
+      {/* Far left: Server list (always visible) */}
       <ServerSidebar servers={servers} loadServers={loadServers} />
 
-      <aside className="sidebar">
-        <div className="sidebar-header">
-          <div className="logo">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 8, flexShrink: 0 }}>
-              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-              <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-            </svg>
-            {selectedServer ? 'Server' : 'CypherChat'}
-          </div>
-        </div>
-
-        <div className="dm-section">
-          <div className="section-header">
-            <span>Direct Messages</span>
-            <button className="add-btn" onClick={() => navigate('/contacts')} title="Add Contact">+</button>
-          </div>
-          <div className="dm-list">
-            {contacts.map(c => (
-              <div
-                key={c.usernameHash}
-                className={`dm-item ${selectedContact === c.usernameHash && !selectedServer ? 'active' : ''}`}
-                onClick={() => {
-                  setSelectedContact(c.usernameHash);
-                  setSelectedServer(null);
-                  setSelectedChannel(null);
-                  navigate('/chat');
-                }}
-                onContextMenu={(e) => handleContextMenu(e, c)}
-              >
-                <div className="dm-avatar-wrapper">
-                  <div className="dm-avatar" style={{ background: stringToColor(c.nickname || c.username) }}>
-                    {(c.nickname || c.username)?.[0]?.toUpperCase() || '?'}
-                  </div>
-                  <div className="status-dot online" />
-                  {unreadMap[c.usernameHash] > 0 && (
-                    <div className="unread-badge">{unreadMap[c.usernameHash]}</div>
-                  )}
-                </div>
-                <div className="dm-name">{c.nickname || c.username}</div>
-                <button className="dm-menu-btn" onClick={(e) => { e.stopPropagation(); handleContextMenu(e, c); }}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-                    <circle cx="12" cy="5" r="2" />
-                    <circle cx="12" cy="12" r="2" />
-                    <circle cx="12" cy="19" r="2" />
-                  </svg>
-                </button>
-              </div>
-            ))}
-            {contacts.length === 0 && (
-              <div className="dm-empty">No conversations yet. Add a contact!</div>
-            )}
-          </div>
-        </div>
-
-        <div className="user-panel">
-          <div className="user-avatar-wrapper">
-            <div className="user-avatar" style={{ background: stringToColor(myUsername) }}>
-              {myUsername[0]?.toUpperCase()}
+      {/* Middle: DM sidebar (HIDDEN when in server view) */}
+      {!isServerView && (
+        <aside className="sidebar">
+          <div className="sidebar-header">
+            <div className="logo">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 8, flexShrink: 0 }}>
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+              </svg>
+              CypherChat
             </div>
-            <div className="status-dot online" />
           </div>
-          <div className="user-info">
-            <div className="user-name">{myUsername}</div>
-            <div className="user-status">Online</div>
-          </div>
-          <button className="logout-btn" onClick={logout} title="Logout">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>
-            </svg>
-          </button>
-        </div>
-      </aside>
 
+          <div className="dm-section">
+            <div className="section-header">
+              <span>Direct Messages</span>
+              <button className="add-btn" onClick={() => navigate('/contacts')} title="Add Contact">+</button>
+            </div>
+            <div className="dm-list">
+              {contacts.map(c => (
+                <div
+                  key={c.usernameHash}
+                  className={`dm-item ${selectedContact === c.usernameHash && !selectedServer ? 'active' : ''}`}
+                  onClick={() => {
+                    setSelectedContact(c.usernameHash);
+                    setSelectedServer(null);
+                    setSelectedChannel(null);
+                    navigate('/chat');
+                  }}
+                  onContextMenu={(e) => handleContextMenu(e, c)}
+                >
+                  <div className="dm-avatar-wrapper">
+                    <div className="dm-avatar" style={{ background: stringToColor(c.nickname || c.username) }}>
+                      {(c.nickname || c.username)?.[0]?.toUpperCase() || '?'}
+                    </div>
+                    <div className="status-dot online" />
+                    {unreadMap[c.usernameHash] > 0 && (
+                      <div className="unread-badge">{unreadMap[c.usernameHash]}</div>
+                    )}
+                  </div>
+                  <div className="dm-name">{c.nickname || c.username}</div>
+                  <button className="dm-menu-btn" onClick={(e) => { e.stopPropagation(); handleContextMenu(e, c); }}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                      <circle cx="12" cy="5" r="2" />
+                      <circle cx="12" cy="12" r="2" />
+                      <circle cx="12" cy="19" r="2" />
+                    </svg>
+                  </button>
+                </div>
+              ))}
+              {contacts.length === 0 && (
+                <div className="dm-empty">No conversations yet. Add a contact!</div>
+              )}
+            </div>
+          </div>
+
+          <div className="user-panel">
+            <div className="user-avatar-wrapper">
+              <div className="user-avatar" style={{ background: stringToColor(myUsername) }}>
+                {myUsername[0]?.toUpperCase()}
+              </div>
+              <div className="status-dot online" />
+            </div>
+            <div className="user-info">
+              <div className="user-name">{myUsername}</div>
+              <div className="user-status">Online</div>
+            </div>
+            <button className="logout-btn" onClick={logout} title="Logout">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>
+              </svg>
+            </button>
+          </div>
+        </aside>
+      )}
+
+      {/* Main content area */}
       <main className="main-content">
         <Outlet />
       </main>
 
+      {/* Context Menu */}
       {contextMenu && (
         <ContextMenu
           x={contextMenu.x}
@@ -275,6 +279,7 @@ export default function Layout() {
         />
       )}
 
+      {/* Friendship Modal */}
       {showFriendModal && friendModalContact && (
         <div className="modal-overlay" onClick={() => setShowFriendModal(false)}>
           <div className="modal-card" onClick={e => e.stopPropagation()}>
