@@ -1,0 +1,20 @@
+{
+  "name": "secure-messenger-server",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "fastify": "^4.26.0",
+    "@fastify/cors": "^9.0.0",
+    "@fastify/jwt": "^8.0.0",
+    "@fastify/rate-limit": "^9.0.0",
+    "pg": "^8.11.0",
+    "dotenv": "^16.4.0",
+    "otpauth": "^9.2.0",
+    "@aws-sdk/client-s3": "^3.500.0",
+    "@aws-sdk/s3-request-presigner": "^3.500.0"
+  }
+}
