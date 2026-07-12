@@ -3,7 +3,6 @@ import { useState, useEffect, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import { getServers, getKeys, storeServerMessage, getServerMessages, setLastRead } from '../db/indexeddb';
 import { decryptWithGroupKey, encryptWithGroupKey, b64, fromB64 } from '../crypto/groupKeys';
-import { importKeyPair } from '../crypto/keys';
 
 const API = '/api';
 
@@ -21,12 +20,6 @@ function stringToColor(str) {
   return COLORS[Math.abs(hash) % COLORS.length];
 }
 
-const ChevronIcon = ({ collapsed }) => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)', transition: 'transform 0.15s', flexShrink: 0 }}>
-    <polyline points="6 9 12 15 18 9"></polyline>
-  </svg>
-);
-
 const HashIcon = () => (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <line x1="4" y1="9" x2="20" y2="9"></line>
@@ -36,38 +29,25 @@ const HashIcon = () => (
   </svg>
 );
 
-const LockIcon = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-    <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-  </svg>
-);
-
-const SpeakerIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
-    <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
-  </svg>
-);
-
 export default function ServerView() {
   const { serverId } = useParams();
-  const { selectedChannel, setSelectedChannel } = useApp();
+  const { selectedChannel, setSelectedChannel, setServerData } = useApp();
   const [server, setServer] = useState(null);
   const [channels, setChannels] = useState([]);
-  const [categories, setCategories] = useState({});
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [collapsedCategories, setCollapsedCategories] = useState({});
-  const [myRole, setMyRole] = useState('member');
   const messagesEndRef = useRef(null);
   const interval = useRef(null);
 
   useEffect(() => {
     loadServer();
     interval.current = setInterval(pollMessages, 3000);
-    return () => clearInterval(interval.current);
+    return () => {
+      clearInterval(interval.current);
+      // Clear server data from context when leaving
+      setServerData(null);
+    };
   }, [serverId]);
 
   useEffect(() => {
@@ -86,7 +66,6 @@ export default function ServerView() {
     let s = servers.find(srv => srv.id === serverId);
 
     if (!s) {
-      // Fetch from server
       const res = await fetch(`${API}/servers/${serverId}/keys`, {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
@@ -95,7 +74,6 @@ export default function ServerView() {
         return;
       }
       const data = await res.json();
-      // For now, use placeholder - in production decrypt names
       s = {
         id: serverId,
         name: 'Server',
@@ -113,18 +91,22 @@ export default function ServerView() {
     }
 
     setServer(s);
-    setMyRole(s.role || 'member');
+    setChannels(s.channels);
 
-    // Build categories
-    const defaultCategories = {
+    // Build categories and push to context so Layout's ServerChannelSidebar can render them
+    const categories = {
       'TEXT CHANNELS': s.channels.filter(c => c.type !== 'voice' && !c.isPrivate),
       'VOICE CHANNELS': s.channels.filter(c => c.type === 'voice'),
     };
     if (s.channels.some(c => c.isPrivate)) {
-      defaultCategories['PRIVATE'] = s.channels.filter(c => c.isPrivate);
+      categories['PRIVATE'] = s.channels.filter(c => c.isPrivate);
     }
-    setCategories(defaultCategories);
-    setChannels(s.channels);
+    // Remove empty categories
+    Object.keys(categories).forEach(k => {
+      if (categories[k].length === 0) delete categories[k];
+    });
+
+    setServerData({ server: s, channels: s.channels, categories });
 
     // Auto-select first channel
     if (!selectedChannel && s.channels.length > 0) {
@@ -232,20 +214,9 @@ export default function ServerView() {
     }
   }
 
-  function toggleCategory(name) {
-    setCollapsedCategories(prev => ({ ...prev, [name]: !prev[name] }));
-  }
-
   if (!server) {
     return (
       <div className="chat-empty">
-        <div className="empty-icon">
-          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <circle cx="12" cy="12" r="10"></circle>
-            <line x1="12" y1="8" x2="12" y2="12"></line>
-            <line x1="12" y1="16" x2="12.01" y2="16"></line>
-          </svg>
-        </div>
         <h2>Loading server...</h2>
       </div>
     );
@@ -260,86 +231,55 @@ export default function ServerView() {
     );
   }
 
+  // Only render the chat area — Layout handles the channel sidebar in column 2
   return (
-    <div className="server-view">
-      {/* Channel Sidebar - LEFT side, replaces DM sidebar */}
-      <div className="channel-sidebar">
-        <div className="server-header">
-          <span className="server-name">{server.name}</span>
-          <ChevronIcon collapsed={false} />
-        </div>
+    <div className="chat-container">
+      <header className="chat-header">
+        {selectedChannel && (
+          <>
+            <HashIcon />
+            <div className="chat-header-name">
+              {channels.find(c => c.id === selectedChannel)?.name || 'general'}
+            </div>
+            <div className="chat-header-status">End-to-end encrypted</div>
+          </>
+        )}
+        {!selectedChannel && (
+          <div className="chat-header-name">Select a channel</div>
+        )}
+      </header>
 
-        <div className="channel-list">
-          {Object.entries(categories).map(([catName, catChannels]) => (
-            catChannels.length > 0 && (
-              <div key={catName} className="channel-category">
-                <div className="category-header" onClick={() => toggleCategory(catName)}>
-                  <ChevronIcon collapsed={!!collapsedCategories[catName]} />
-                  <span>{catName}</span>
-                </div>
-                {!collapsedCategories[catName] && (
-                  <div className="category-channels">
-                    {catChannels.map(ch => (
-                      <div
-                        key={ch.id}
-                        className={`channel-item ${selectedChannel === ch.id ? 'active' : ''}`}
-                        onClick={() => setSelectedChannel(ch.id)}
-                      >
-                        {ch.type === 'voice' ? <SpeakerIcon /> : (ch.isPrivate ? <LockIcon /> : <HashIcon />)}
-                        <span className="channel-name">{ch.name || 'channel'}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
+      <div className="message-list">
+        {messages.length === 0 && (
+          <div className="chat-empty" style={{ padding: '32px 0' }}>
+            <p>No messages yet. Say something!</p>
+          </div>
+        )}
+        {messages.map((m, i) => (
+          <div key={i} className="message-row">
+            <div
+              className="message-avatar"
+              style={{ background: stringToColor(m.senderUsernameHash) }}
+            >
+              {m.senderUsernameHash === 'self' ? 'Y' : m.senderUsernameHash.slice(0, 2).toUpperCase()}
+            </div>
+            <div className="message-content">
+              <div className="message-header">
+                <span className="message-author">
+                  {m.senderUsernameHash === 'self' ? 'You' : 'User'}
+                </span>
+                <span className="message-time">
+                  {new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </span>
               </div>
-            )
-          ))}
-        </div>
+              <div className="message-text">{m.content}</div>
+            </div>
+          </div>
+        ))}
+        <div ref={messagesEndRef} />
       </div>
 
-      {/* Main Chat Area */}
-      <div className="chat-container">
-        <header className="chat-header">
-          {selectedChannel && (
-            <>
-              <HashIcon />
-              <div className="chat-header-name">
-                {channels.find(c => c.id === selectedChannel)?.name || 'general'}
-              </div>
-            </>
-          )}
-        </header>
-
-        <div className="message-list">
-          {messages.length === 0 && (
-            <div className="chat-empty" style={{ padding: '32px 0' }}>
-              <p>No messages yet. Say something!</p>
-            </div>
-          )}
-          {messages.map((m, i) => (
-            <div key={i} className="message-row">
-              <div
-                className="message-avatar"
-                style={{ background: stringToColor(m.senderUsernameHash) }}
-              >
-                {m.senderUsernameHash === 'self' ? 'Y' : m.senderUsernameHash.slice(0, 2).toUpperCase()}
-              </div>
-              <div className="message-content">
-                <div className="message-header">
-                  <span className="message-author">
-                    {m.senderUsernameHash === 'self' ? 'You' : 'User'}
-                  </span>
-                  <span className="message-time">
-                    {new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </span>
-                </div>
-                <div className="message-text">{m.content}</div>
-              </div>
-            </div>
-          ))}
-          <div ref={messagesEndRef} />
-        </div>
-
+      {selectedChannel ? (
         <form className="chat-input-area" onSubmit={sendMessage}>
           <div className="chat-input-wrapper">
             <textarea
@@ -365,7 +305,11 @@ export default function ServerView() {
             </button>
           </div>
         </form>
-      </div>
+      ) : (
+        <div className="chat-input-area" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+          Select a channel to start chatting
+        </div>
+      )}
     </div>
   );
 }
