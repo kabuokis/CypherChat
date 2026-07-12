@@ -130,6 +130,48 @@ export default function DMLayout() {
 
   const handleInviteToServer = async (contact, serverId) => {
     try {
+      // 1. Get recipient's public key
+      const pubKeyRes = await fetch(`/api/contacts/search/${contact.usernameHash}`, {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+      });
+      if (!pubKeyRes.ok) throw new Error('Could not fetch recipient public key');
+      const { publicKey: recipientPubKeyB64 } = await pubKeyRes.json();
+      const recipientPubKey = fromB64(recipientPubKeyB64);
+
+      // 2. Get our stored server + all channel keys
+      const servers = await getServers();
+      const server = servers.find(s => s.id === serverId);
+      if (!server) throw new Error('Server not found in local storage');
+      const serverKeyRaw = fromB64(server.serverKey);
+
+      // 3. Build bundle: { serverKey, serverName, channels: [{id, key, name}] }
+      const bundle = {
+        serverKey: b64(serverKeyRaw),
+        serverName: server.name || 'Server',
+        channels: (server.channels || []).map(ch => ({
+          id: ch.id,
+          key: ch.channelKey,
+          name: ch.name || 'channel'
+        }))
+      };
+
+      // 4. Generate a one-time AES key, encrypt bundle with it, then wrap AES key for recipient
+      const { encryptGroupKeyForMember: encForMember, encryptWithGroupKey: encWithKey } = await import('../crypto/groupKeys');
+      const bundleAesKey = crypto.getRandomValues(new Uint8Array(32));
+      const encryptedPayload = await encWithKey(bundleAesKey, bundle);
+      const encryptedAesKey = new Uint8Array(await encForMember(bundleAesKey, recipientPubKey));
+
+      // 5. Pack: [2 bytes keyLen][encryptedAesKey][12 bytes iv][ciphertext]
+      const keyLen = new Uint8Array(2);
+      new DataView(keyLen.buffer).setUint16(0, encryptedAesKey.length, false);
+      const finalBundle = new Uint8Array(2 + encryptedAesKey.length + encryptedPayload.iv.length + encryptedPayload.ciphertext.length);
+      let offset = 0;
+      finalBundle.set(keyLen, offset); offset += 2;
+      finalBundle.set(encryptedAesKey, offset); offset += encryptedAesKey.length;
+      finalBundle.set(encryptedPayload.iv, offset); offset += 12;
+      finalBundle.set(encryptedPayload.ciphertext, offset);
+
+      // 6. Create invite
       const res = await fetch(`/api/invites`, {
         method: 'POST',
         headers: {
@@ -138,8 +180,8 @@ export default function DMLayout() {
         },
         body: JSON.stringify({
           serverId,
-          encryptedKeyBundle: b64(crypto.getRandomValues(new Uint8Array(32))),
-          usesLeft: 1
+          encryptedKeyBundle: b64(finalBundle),
+          usesLeft: 5
         })
       });
 
@@ -150,11 +192,12 @@ export default function DMLayout() {
       const { code } = await res.json();
       const inviteLink = `${window.location.origin}/invite/${code}`;
       await navigator.clipboard.writeText(inviteLink);
-      alert(`Invite link copied to clipboard!\nShare it with ${contact.username}`);
+      alert(`Invite link copied!\nShare it with ${contact.username}`);
     } catch (err) {
       alert('Failed to create invite: ' + err.message);
     }
   };
+
 
   const handleSetNickname = async (contact, nickname) => {
     const updated = { ...contact, nickname };

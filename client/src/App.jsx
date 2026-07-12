@@ -8,6 +8,7 @@ import TOTPSetup from './components/TOTPSetup';
 import Chat from './components/Chat';
 import Contacts from './components/Contacts';
 import ServerView from './components/ServerView';
+import InviteAccept from './components/InviteAccept';
 
 export default function App() {
   return (
@@ -15,18 +16,22 @@ export default function App() {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
-        
-        {/* DM routes — have DM sidebar */}
+
+        {/* Invite — no layout, standalone page */}
+        <Route path="/invite/:code" element={<InviteAccept />} />
+
+        {/* DM routes */}
         <Route element={<DMLayout />}>
           <Route path="/chat" element={<Chat />} />
           <Route path="/contacts" element={<Contacts />} />
           <Route path="/totp-setup" element={<TOTPSetup />} />
           <Route path="/" element={<Navigate to="/chat" />} />
         </Route>
-        
-        {/* Server routes — NO DM sidebar */}
+
+        {/* Server routes */}
         <Route element={<Layout />}>
           <Route path="/server/:serverId" element={<ServerView />} />
+          <Route path="/server/:serverId/channel/:channelId" element={<ServerView />} />
         </Route>
       </Routes>
     </AppProvider>

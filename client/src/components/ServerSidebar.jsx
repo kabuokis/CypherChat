@@ -76,17 +76,17 @@ export default function ServerSidebar({ servers, loadServers }) {
         }
         const data = await res.json();
 
-        // Store locally with plaintext names for UI
+        // Store locally with real channel IDs from server response
         await storeServer({
         id: data.serverId,
         name: serverName,
         role: 'admin',
         serverKey: b64(serverKey),
-        channels: [{
-            id: data.channelId || crypto.randomUUID(), // server should return this
-            name: 'general',
+        channels: (data.channels || []).map((ch, i) => ({
+            id: ch.channelId,
+            name: i === 0 ? 'general' : `channel-${i}`,
             channelKey: b64(generalKey)
-        }]
+        }))
         });
 
         setShowCreate(false);
