@@ -58,7 +58,6 @@ declare module '$env/static/private' {
 	export const CHROME_DESKTOP: string;
 	export const KDE_APPLICATIONS_AS_SCOPE: string;
 	export const LOCPATH_VSCODE_SNAP_ORIG: string;
-	export const OLDPWD: string;
 	export const TERM_PROGRAM_VERSION: string;
 	export const DESKTOP_SESSION: string;
 	export const GTK_PATH: string;
@@ -267,7 +266,6 @@ declare module '$env/dynamic/private' {
 		CHROME_DESKTOP: string;
 		KDE_APPLICATIONS_AS_SCOPE: string;
 		LOCPATH_VSCODE_SNAP_ORIG: string;
-		OLDPWD: string;
 		TERM_PROGRAM_VERSION: string;
 		DESKTOP_SESSION: string;
 		GTK_PATH: string;
