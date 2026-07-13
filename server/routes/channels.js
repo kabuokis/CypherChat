@@ -1,113 +1,253 @@
-export default async function channelRoutes(app, opts) {
-  const db = app.db;
+'use strict';
 
-  // Create channel (admin only)
-  app.post('/', { onRequest: [app.authenticate] }, async (request, reply) => {
-    const { userId } = request.user;
-    const { serverId, encryptedName, channelKeyHash, isPrivate, roleRequired, memberKeys } = request.body;
+const pool = require('../db');
 
-    const roleCheck = await db.query(
-      'SELECT role FROM server_members WHERE server_id = $1 AND user_id = $2',
-      [serverId, userId]
-    );
-    if (roleCheck.rows.length === 0 || !['admin', 'moderator'].includes(roleCheck.rows[0].role)) {
-      return reply.code(403).send({ error: 'Insufficient permissions' });
-    }
+module.exports = async function (fastify, opts) {
 
-    const chResult = await db.query(
-      `INSERT INTO channels (server_id, encrypted_name, channel_key_hash, is_private, role_required)
-       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-      [serverId, Buffer.from(encryptedName, 'base64'), Buffer.from(channelKeyHash, 'base64'),
-       isPrivate || false, roleRequired || 'member']
-    );
-    const channelId = chResult.rows[0].id;
+  // POST /api/channels — create a channel
+  fastify.post('/', {
+    onRequest: [fastify.authenticate],
+    handler: async (request, reply) => {
+      const { serverId, nameCiphertext, nameNonce, isPrivate, requiredRole, encryptedKeys } = request.body;
+      if (!serverId || !nameCiphertext || !nameNonce) {
+        return reply.code(400).send({ error: 'Missing required fields' });
+      }
 
-    for (const mk of memberKeys || []) {
-      await db.query(
-        `INSERT INTO channel_keys (channel_id, user_id, encrypted_channel_key)
-         VALUES ($1, $2, $3)`,
-        [channelId, mk.userId, Buffer.from(mk.encryptedChannelKey, 'base64')]
-      );
-    }
+      try {
+        // Check admin/mod
+        const memberCheck = await pool.query(
+          'SELECT role FROM server_members WHERE server_id = $1 AND user_id = $2',
+          [serverId, request.userId]
+        );
+        if (memberCheck.rows.length === 0 || !['admin', 'moderator'].includes(memberCheck.rows[0].role)) {
+          return reply.code(403).send({ error: 'Insufficient permissions' });
+        }
 
-    return { channelId, success: true };
-  });
+        const nameCipherBuf = Buffer.from(nameCiphertext, 'base64');
+        const nameNonceBuf = Buffer.from(nameNonce, 'base64');
 
-  // Send message to channel
-  app.post('/:id/messages', { onRequest: [app.authenticate] }, async (request, reply) => {
-    const { userId } = request.user;
-    const { id } = request.params;
-    const { ciphertextBlob, iv } = request.body;
+        const result = await pool.query(
+          `INSERT INTO channels (server_id, name_ciphertext, name_nonce, is_private, required_role)
+           VALUES ($1, $2, $3, $4, $5)
+           RETURNING id`,
+          [serverId, nameCipherBuf, nameNonceBuf, isPrivate || false, requiredRole || 'member']
+        );
+        const channelId = result.rows[0].id;
 
-    // Verify membership and channel access
-    const member = await db.query(
-      `SELECT sm.role FROM server_members sm
-       JOIN channels c ON c.server_id = sm.server_id
-       WHERE c.id = $1 AND sm.user_id = $2`,
-      [id, userId]
-    );
-    if (member.rows.length === 0) return reply.code(403).send({ error: 'Not a member' });
+        // Store encrypted keys for each member
+        if (Array.isArray(encryptedKeys)) {
+          for (const ek of encryptedKeys) {
+            await pool.query(
+              `INSERT INTO channel_keys (channel_id, user_id, encrypted_key, key_version)
+               VALUES ($1, $2, $3, 1)`,
+              [channelId, ek.userId, Buffer.from(ek.encryptedKey, 'base64')]
+            );
+          }
+        }
 
-    const channel = await db.query(
-      'SELECT is_private, role_required FROM channels WHERE id = $1',
-      [id]
-    );
-    if (channel.rows[0].is_private) {
-      const required = channel.rows[0].role_required;
-      const roles = ['member', 'moderator', 'admin'];
-      if (roles.indexOf(member.rows[0].role) < roles.indexOf(required)) {
-        return reply.code(403).send({ error: 'Insufficient channel permissions' });
+        return reply.code(201).send({ channelId });
+      } catch (err) {
+        fastify.log.error(err);
+        return reply.code(500).send({ error: 'Failed to create channel' });
       }
     }
-
-    const userHash = await db.query('SELECT username_hash FROM users WHERE id = $1', [userId]);
-    await db.query(
-      `INSERT INTO server_messages (channel_id, sender_username_hash, ciphertext_blob, iv)
-       VALUES ($1, $2, $3, $4)`,
-      [id, userHash.rows[0].username_hash, Buffer.from(ciphertextBlob, 'base64'), Buffer.from(iv, 'base64')]
-    );
-
-    return { success: true };
   });
 
-  // Get channel messages
-  app.get('/:id/messages', { onRequest: [app.authenticate] }, async (request, reply) => {
-    const { userId } = request.user;
-    const { id } = request.params;
-    const { after = 0 } = request.query;
+  // GET /api/channels — list channels for a server
+  fastify.get('/', {
+    onRequest: [fastify.authenticate],
+    handler: async (request, reply) => {
+      const { serverId } = request.query;
+      if (!serverId) {
+        return reply.code(400).send({ error: 'serverId required' });
+      }
 
-    const access = await db.query(
-      `SELECT sm.role, c.is_private, c.role_required
-       FROM server_members sm
-       JOIN channels c ON c.server_id = sm.server_id
-       WHERE c.id = $1 AND sm.user_id = $2`,
-      [id, userId]
-    );
-    if (access.rows.length === 0) return reply.code(403).send({ error: 'Not a member' });
+      try {
+        // Check membership
+        const memberCheck = await pool.query(
+          'SELECT role FROM server_members WHERE server_id = $1 AND user_id = $2',
+          [serverId, request.userId]
+        );
+        if (memberCheck.rows.length === 0) {
+          return reply.code(403).send({ error: 'Not a member' });
+        }
+        const myRole = memberCheck.rows[0].role;
+        const roleRank = { admin: 3, moderator: 2, member: 1 };
 
-    const row = access.rows[0];
-    if (row.is_private) {
-      const roles = ['member', 'moderator', 'admin'];
-      if (roles.indexOf(row.role) < roles.indexOf(row.role_required)) {
-        return reply.code(403).send({ error: 'Insufficient channel permissions' });
+        const result = await pool.query(
+          `SELECT id, server_id, name_ciphertext, name_nonce, is_private, required_role, created_at
+           FROM channels WHERE server_id = $1
+           ORDER BY created_at ASC`,
+          [serverId]
+        );
+
+        // Filter private channels based on role
+        const channels = result.rows
+          .filter(r => {
+            if (!r.is_private) return true;
+            return roleRank[myRole] >= roleRank[r.required_role];
+          })
+          .map(r => ({
+            id: r.id,
+            serverId: r.server_id,
+            nameCiphertext: r.name_ciphertext.toString('base64'),
+            nameNonce: r.name_nonce.toString('base64'),
+            isPrivate: r.is_private,
+            requiredRole: r.required_role,
+            createdAt: r.created_at
+          }));
+
+        return reply.code(200).send({ channels });
+      } catch (err) {
+        fastify.log.error(err);
+        return reply.code(500).send({ error: 'Failed to fetch channels' });
       }
     }
-
-    const result = await db.query(
-      `SELECT id, sender_username_hash, ciphertext_blob, iv, sequence_number, created_at
-       FROM server_messages
-       WHERE channel_id = $1 AND sequence_number > $2
-       ORDER BY sequence_number DESC LIMIT 100`,
-      [id, after]
-    );
-
-    return result.rows.map(r => ({
-      id: r.id,
-      senderUsernameHash: r.sender_username_hash.toString('base64'),
-      ciphertextBlob: r.ciphertext_blob.toString('base64'),
-      iv: r.iv.toString('base64'),
-      sequenceNumber: r.sequence_number,
-      createdAt: r.created_at
-    })).reverse();
   });
-}
+
+  // GET /api/channels/keys — get my encrypted channel keys for a server
+  fastify.get('/keys', {
+    onRequest: [fastify.authenticate],
+    handler: async (request, reply) => {
+      const { serverId } = request.query;
+      if (!serverId) {
+        return reply.code(400).send({ error: 'serverId required' });
+      }
+
+      try {
+        const result = await pool.query(
+          `SELECT ck.channel_id, ck.encrypted_key, ck.key_version
+           FROM channel_keys ck
+           JOIN channels c ON ck.channel_id = c.id
+           WHERE c.server_id = $1 AND ck.user_id = $2
+           ORDER BY ck.key_version DESC`,
+          [serverId, request.userId]
+        );
+
+        return reply.code(200).send({
+          keys: result.rows.map(r => ({
+            channelId: r.channel_id,
+            encryptedKey: r.encrypted_key.toString('base64'),
+            keyVersion: r.key_version
+          }))
+        });
+      } catch (err) {
+        fastify.log.error(err);
+        return reply.code(500).send({ error: 'Failed to fetch keys' });
+      }
+    }
+  });
+
+  // POST /api/channels/:id/messages — send a message to a channel
+  fastify.post('/:id/messages', {
+    onRequest: [fastify.authenticate],
+    handler: async (request, reply) => {
+      const { id } = request.params;
+      const { ciphertextBlob, nonce, signature, paddingSize } = request.body;
+      if (!ciphertextBlob || !nonce || !signature) {
+        return reply.code(400).send({ error: 'Missing required fields' });
+      }
+
+      try {
+        // Check channel access
+        const channelCheck = await pool.query(
+          `SELECT c.server_id, c.is_private, c.required_role
+           FROM channels c WHERE c.id = $1`,
+          [id]
+        );
+        if (channelCheck.rows.length === 0) {
+          return reply.code(404).send({ error: 'Channel not found' });
+        }
+        const channel = channelCheck.rows[0];
+
+        const memberCheck = await pool.query(
+          'SELECT role FROM server_members WHERE server_id = $1 AND user_id = $2',
+          [channel.server_id, request.userId]
+        );
+        if (memberCheck.rows.length === 0) {
+          return reply.code(403).send({ error: 'Not a member' });
+        }
+        const myRole = memberCheck.rows[0].role;
+        const roleRank = { admin: 3, moderator: 2, member: 1 };
+
+        if (channel.is_private && roleRank[myRole] < roleRank[channel.required_role]) {
+          return reply.code(403).send({ error: 'Cannot access this channel' });
+        }
+
+        await pool.query(
+          `INSERT INTO server_messages (channel_id, sender_id, ciphertext_blob, nonce, signature, padding_size)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [id, request.userId, Buffer.from(ciphertextBlob, 'base64'), Buffer.from(nonce, 'base64'), Buffer.from(signature, 'base64'), paddingSize || 1024]
+        );
+
+        return reply.code(201).send({ success: true });
+      } catch (err) {
+        fastify.log.error(err);
+        return reply.code(500).send({ error: 'Failed to send message' });
+      }
+    }
+  });
+
+  // GET /api/channels/:id/messages — fetch messages from a channel
+  fastify.get('/:id/messages', {
+    onRequest: [fastify.authenticate],
+    handler: async (request, reply) => {
+      const { id } = request.params;
+      const { limit = 50, before } = request.query;
+
+      try {
+        const channelCheck = await pool.query(
+          `SELECT c.server_id, c.is_private, c.required_role
+           FROM channels c WHERE c.id = $1`,
+          [id]
+        );
+        if (channelCheck.rows.length === 0) {
+          return reply.code(404).send({ error: 'Channel not found' });
+        }
+        const channel = channelCheck.rows[0];
+
+        const memberCheck = await pool.query(
+          'SELECT role FROM server_members WHERE server_id = $1 AND user_id = $2',
+          [channel.server_id, request.userId]
+        );
+        if (memberCheck.rows.length === 0) {
+          return reply.code(403).send({ error: 'Not a member' });
+        }
+        const myRole = memberCheck.rows[0].role;
+        const roleRank = { admin: 3, moderator: 2, member: 1 };
+
+        if (channel.is_private && roleRank[myRole] < roleRank[channel.required_role]) {
+          return reply.code(403).send({ error: 'Cannot access this channel' });
+        }
+
+        let query = `SELECT id, sender_id, ciphertext_blob, nonce, signature, padding_size, sequence_number, created_at
+                     FROM server_messages WHERE channel_id = $1`;
+        const params = [id];
+        if (before) {
+          query += ` AND sequence_number < $2`;
+          params.push(before);
+        }
+        query += ` ORDER BY sequence_number DESC LIMIT $${params.length + 1}`;
+        params.push(Math.min(parseInt(limit), 100));
+
+        const result = await pool.query(query, params);
+
+        return reply.code(200).send({
+          messages: result.rows.map(r => ({
+            id: r.id,
+            senderId: r.sender_id,
+            ciphertextBlob: r.ciphertext_blob.toString('base64'),
+            nonce: r.nonce.toString('base64'),
+            signature: r.signature.toString('base64'),
+            paddingSize: r.padding_size,
+            sequenceNumber: r.sequence_number,
+            createdAt: r.created_at
+          }))
+        });
+      } catch (err) {
+        fastify.log.error(err);
+        return reply.code(500).send({ error: 'Failed to fetch messages' });
+      }
+    }
+  });
+};

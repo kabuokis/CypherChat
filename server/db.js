@@ -1,8 +1,18 @@
-import pg from 'pg';
-const { Pool } = pg;
+'use strict';
+
+const { Pool } = require('pg');
+require('dotenv').config();
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/messenger'
+  connectionString: process.env.DATABASE_URL || 'postgres://cypherchat:cypherchat_secret@localhost:5432/cypherchat',
+  max: 20,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000,
 });
 
-export default pool;
+pool.on('error', (err) => {
+  console.error('Unexpected PostgreSQL error:', err);
+  process.exit(-1);
+});
+
+module.exports = pool;

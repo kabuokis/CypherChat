@@ -1,14 +1,41 @@
 services:
   postgres:
     image: postgres:16-alpine
+    container_name: cypherchat-postgres
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: messenger
+      POSTGRES_USER: cypherchat
+      POSTGRES_PASSWORD: cypherchat_secret
+      POSTGRES_DB: cypherchat
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./server/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+      - ./server/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cypherchat -d cypherchat"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: cypherchat-server
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://cypherchat:cypherchat_secret@postgres:5432/cypherchat
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production-jwt-secret-32-bytes-long}
+      SERVER_SECRET: ${SERVER_SECRET:-change-me-in-production-server-secret-32-bytes}
+      PORT: 3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./server:/app:ro
+    command: sh -c "node index.js"
+
 volumes:
   postgres_data:
